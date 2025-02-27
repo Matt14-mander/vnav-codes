@@ -9,7 +9,7 @@
 #include <trajectory_msgs/MultiDOFJointTrajectory.h>
 
 #include <mav_trajectory_generation/polynomial_optimization_linear.h>
-#include <mav_trajectory_generation/trajectory.h>
+#include <mav_trajectory_generation/trajectory.h
 
 #include <tf/transform_datatypes.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
@@ -38,9 +38,9 @@ class WaypointFollower {
     //  Populate the variable x, which encodes the current world position of the
     //  UAV
     // ~~~~ begin solution
-    //
-    //     **** FILL IN HERE ***
-    //
+    x = Eigen::Vector3d(cur_state.pose.pose.position.x, 
+                        cur_state.pose.pose.position.y,
+                        cur_state.pose.pose.position.z);
     // ~~~~ end solution
     // ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~
     // ~
@@ -106,21 +106,27 @@ class WaypointFollower {
     yaw_vertices.push_back(start_yaw);
 
     double last_yaw = 0;
-    for (auto i = 0; i < poseArray.poses.size(); ++i) {
+    for (auto i = 0; i < poseArray.poses.size()-1; ++i) {
+      const auto& pose = poseArray.poses[i];
+
       // Populate vertices (for the waypoint positions)
-      //
-      //
-      //     **** FILL IN HERE ***
-      //
-      //
-      // Populate yaw_vertices (for the waypoint yaw angles)
-      //
-      //
-      //     **** FILL IN HERE ***
-      //
-      //
+      Eigen::Vector3d position(pose.position.x, pose.position.y, pose.position.z);
+      mav_trajectory_generation::Vertex vertex(D);
+      vertex.addConstraint(POSITION, position);
+      vertices.push_back(vertex);
+
+      // Populate yaw_vertices (for the waypoint orientations)
+      double yaw = tf::getYaw(pose.orientation);
+      yaw = fmod(yaw+2*M_PI, 2*M_PI);  // Normalize the yaw
+      mav_trajectory_generation::Vertex yaw_vertex(1);
+      yaw_vertex.addConstraint(ORIENTATION, yaw);
+      yaw_vertices.push_back(yaw_vertex);
     }
 
+    const auto& last_position = poseArray.poses.back().position;
+    Eigen::Vector3d end_position_vector(last_position.x, last_position.y, last_position.z);
+    end_position.makeStartOrEnd(end_position_vector, SNAP);
+      
     // ~~~~ end solution
     // ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~
     // ~
@@ -156,12 +162,13 @@ class WaypointFollower {
     // Get the optimized trajectory
     // ============================
     mav_trajectory_generation::Segment::Vector segments;
-    //        opt.getSegments(&segments); // Unnecessary?
+    // opt.getSegments(&segments); // Unnecessary?
     opt.getTrajectory(&trajectory);
     yaw_opt.getTrajectory(&yaw_trajectory);
     trajectoryStartTime = ros::Time::now();
 
-    ROS_INFO("Generated optimizes trajectory from %d waypoints",
+    ROS_INFO("Generated optimizes trajectory from %l
+    d waypoints",
              vertices.size());
   }
 
@@ -180,11 +187,13 @@ class WaypointFollower {
     //
     // ~~~~ begin solution
     trajectory_msgs::MultiDOFJointTrajectoryPoint next_point;
-    next_point.time_from_start = ros::Duration(0.0);  // <--- Correct this
+    next_point.time_from_start = ros::Duration(0.1);  // <--- Correct this
 
-    double sampling_time = 0;  // <--- Correct this
+    double sampling_time = (ros::Time::now()-trajectoryStartTime).toSec();  // <--- Correct this
     if (sampling_time > trajectory.getMaxTime())
       sampling_time = trajectory.getMaxTime();
+    
+    next_point.time_from_start = ros::Duration(sampling_time);
 
     // Getting the desired state based on the optimized trajectory we found.
     using namespace mav_trajectory_generation::derivative_order;
@@ -198,11 +207,23 @@ class WaypointFollower {
              sampling_time / trajectory.getMaxTime() * 100);
 
     // Populate next_point
-    //
-    //
-    //     **** FILL IN HERE ***
-    //
-    //
+    next_point.transforms.resize(1);
+    next_point.transforms[0].translation.x = des_position.x();
+    next_point.transforms[0].translation.y = des_position.y();
+    next_point.transforms[0].translation.z = des_position.z();
+    next_point.transforms[0].rotation = tf::createQuaternionMsgFromYaw(des_orientation[0]);
+
+    next_point.velocities.resize(1);
+    next_point.velocities[0].linear.x = des_velocity.x();
+    next_point.velocities[0].linear.y = des_velocity.y();
+    next_point.velocities[0].linear.z = des_velocity.z();
+
+    next_point.accelerations.resize(1);
+    next_point.accelerations[0].linear.x = des_accel.x();
+    next_point.accelerations[0].linear.y = des_accel.y();
+    next_point.accelerations[0].linear.z = des_accel.z();
+
+    desiredStatePub.publish(next_point);
 
     // ~~~~ end solution
     // ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~
