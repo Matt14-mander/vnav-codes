@@ -58,7 +58,10 @@ class controllerNode{
   //
   // ~~~~ begin solution
   //
-  //     **** FILL IN HERE ***
+  ros::Subscriber desired_state_sub;
+  ros::Subscriber current_state_sub;
+  ros::Publisher propeller_speed_pub;
+  ros::Timer control_loop_timer;
   //
   // ~~~~ end solution
   // ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~
@@ -124,7 +127,10 @@ public:
       //
       // ~~~~ begin solution
       //
-      //     **** FILL IN HERE ***
+      desired_state_sub = nh.subscribe("desired_state", 1, &controllerNode::onDesiredState, this);
+      current_state_sub = nh.subscribe("current_state", 1, &controllerNode::onCurrentState, this);
+      propeller_speed_pub = nh.advertise<mav_msgs::Actuators>("rotor_speed_cmds", 1);
+      control_loop_timer = nh.createTimer(ros::Duration(1.0/hz), &controllerNode::controlLoop, this);
       //
       // ~~~~ end solution
 
@@ -162,7 +168,17 @@ public:
       cf = 1e-3;
       g = 9.81;
       d = 0.3;
-      J << 1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,1.0;
+      J << 1.0,0.0,0.0,
+           0.0,1.0,0.0,
+           0.0,0.0,1.0;
+      // Initialize F2W matrix
+      Eigen::Matrix4d W2F;
+      W2F <<  cf,     cf,     cf,    cf,
+             0,  cf*d,  0,  -cf*d,
+            -cf*d,  0,   cf*d,  0,
+             cd,    -cd,     cd,   -cd;
+             
+      F2W = W2F.inverse();
   }
 
   void onDesiredState(const trajectory_msgs::MultiDOFJointTrajectoryPoint& des_state){
@@ -179,7 +195,29 @@ public:
       //
       // ~~~~ begin solution
       //
-      //     **** FILL IN HERE ***
+      if (des_state.transforms.size() > 0) {
+          xd << des_state.transforms[0].translation.x,
+                des_state.transforms[0].translation.y,
+                des_state.transforms[0].translation.z;
+          // Extract yaw from quaternion
+          tf2::Quaternion q;
+          tf2::fromMsg(des_state.transforms[0].rotation, q);
+          yawd = tf2::getYaw(q);
+      }
+      if (des_state.velocities.size() > 0) {
+          vd << des_state.velocities[0].linear.x,
+                des_state.velocities[0].linear.y,
+                des_state.velocities[0].linear.z;
+      } else {
+          vd.setZero();
+      }
+      if (des_state.accelerations.size() > 0) {
+          ad << des_state.accelerations[0].linear.x,
+                des_state.accelerations[0].linear.y,
+                des_state.accelerations[0].linear.z;
+      } else {
+          ad.setZero();
+      }
       //
       // ~~~~ end solution
       //
@@ -192,7 +230,7 @@ public:
       //
       // ~~~~ begin solution
       //
-      //     **** FILL IN HERE ***
+      // Already extracted above
       //
       // ~~~~ end solution
       //
@@ -214,7 +252,24 @@ public:
       //
       // ~~~~ begin solution
       //
-      //     **** FILL IN HERE ***
+      x << cur_state.pose.pose.position.x,
+           cur_state.pose.pose.position.y,
+           cur_state.pose.pose.position.z;
+
+      v << cur_state.twist.twist.linear.x,
+           cur_state.twist.twist.linear.y,
+           cur_state.twist.twist.linear.z;
+
+      Eigen::Quaterniond q;
+      tf2::fromMsg(cur_state.pose.pose.orientation, q);
+      R = q.toRotationMatrix();
+
+      Eigen::Vector3d omega_world;
+      omega_world << cur_state.twist.twist.angular.x,
+                     cur_state.twist.twist.angular.y,
+                     cur_state.twist.twist.angular.z;
+
+      omega = R.transpose() * omega_world;
       //
       // ~~~~ end solution
       //
@@ -225,6 +280,7 @@ public:
 
   void controlLoop(const ros::TimerEvent& t){
     Eigen::Vector3d ex, ev, er, eomega;
+    Eigen::Vector4d U;
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     //  PART 5 | Objective: Implement the controller!
@@ -235,7 +291,8 @@ public:
     //
     // ~~~~ begin solution
     //
-    //     **** FILL IN HERE ***
+    ex = x - xd;
+    ev = v - vd;
     //
     // ~~~~ end solution
 
@@ -256,7 +313,15 @@ public:
     //
     // ~~~~ begin solution
     //
-    //     **** FILL IN HERE ***
+    Eigen::Vector3d b3d = f_desired.normalized();
+    Eigen::Vector3d b1d_c;
+    b1d_c << cos(yawd), sin(yawd), 0;
+    Eigen::Vector3d b2d = b3d.cross(b1d_c).normalized();
+    Eigen::Vector3d b1d = b2d.cross(b3d);
+    Eigen::Matrix3d Rd;
+    Rd.col(0) = b1d;
+    Rd.col(1) = b2d;
+    Rd.col(2) = b3d;
     //
     // ~~~~ end solution
     //
@@ -271,7 +336,9 @@ public:
     //
     // ~~~~ begin solution
     //
-    //     **** FILL IN HERE ***
+    Eigen::Matrix3d eR_matrix = 0.5 * (Rd.transpose() * R - R.transpose() * Rd);
+    er = Vee(eR_matrix);
+    eomega = omega; 
     //
     // ~~~~ end solution
     //
@@ -292,7 +359,8 @@ public:
     //
     // ~~~~ begin solution
     //
-    //     **** FILL IN HERE ***
+    Eigen::Vector3d f_desired = -kx * ex - kv * ev + m * ad + m * g * e3;
+    Eigen::Vector3d M = -kr * er - komega * eomega + omega.cross(J * omega);
     //
     // ~~~~ end solution
 
@@ -321,7 +389,15 @@ public:
     //
     // ~~~~ begin solution
     //
-    //     **** FILL IN HERE ***
+    double u1 = f_desired.dot(R * e3);
+    U(0) = u1;
+    U.segment(1,3) = M;
+
+    Eigen::Vector4d omega_squares = F2W * U;
+    Eigen::Vector4d rotor_speeds;
+    for (int i = 0; i < 4; ++i) {
+        rotor_speeds(i) = signed_sqrt(omega_squares(i));
+    }
     //
     // ~~~~ end solution
     //
@@ -332,7 +408,13 @@ public:
     //
     // ~~~~ begin solution
     //
-    //     **** FILL IN HERE ***
+    mav_msgs::Actuators motor_speed_msg;
+    motor_speed_msg.header.stamp = ros::Time::now();
+    motor_speed_msg.angular_velocities.resize(4);
+    for (int i = 0; i < 4; ++i) {
+        motor_speed_msg.angular_velocities[i] = rotor_speeds(i);
+    }
+    propeller_speed_pub.publish(motor_speed_msg);
     //
     // ~~~~ end solution
     //
